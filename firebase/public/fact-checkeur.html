@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ElectoRadar — Espace fact-checkeur</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="lib/firebase-app-compat.js"></script>
+  <script src="lib/firebase-auth-compat.js"></script>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ElectoRadar — Espace fact-checkeur</h1>
+    <p id="who">Connexion requise</p>
+  </div>
+  <nav><a href="index.html">Page publique</a> · <a href="#" id="logout" hidden>Se déconnecter</a></nav>
+</header>
+<main>
+  <div id="login" class="card" hidden>
+    <h2 style="margin-top:0">Connexion</h2>
+    <p class="muted">Compte fact-checkeur créé par la commission (Firebase Authentication).</p>
+    <form class="login" onsubmit="signIn(event)">
+      <label for="email">E-mail</label><input id="email" type="email" autocomplete="username" required>
+      <label for="pwd">Mot de passe</label><input id="pwd" type="password" autocomplete="current-password" required>
+      <button type="submit">Se connecter</button>
+      <p id="login-msg" class="muted"></p>
+    </form>
+  </div>
+
+  <div id="app" class="grid" hidden>
+    <div>
+      <div class="row"><h2>Rumeurs</h2><button id="refresh" style="margin:0">Actualiser</button></div>
+      <div id="list" class="list"><p class="muted">Chargement…</p></div>
+    </div>
+    <div>
+      <h2>Détail</h2>
+      <div id="detail" class="card"><p class="muted">Sélectionnez une rumeur.</p></div>
+    </div>
+  </div>
+</main>
+<script>
+const cfg = window.ELECTORADAR;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rtl = s => /[؀-ۿ]/.test(s) ? 'dir="rtl"' : "";
+const scoreClass = s => s >= 70 ? "s-high" : s >= 50 ? "s-mid" : "s-low";
+let current = null;
+
+firebase.initializeApp(cfg.FIREBASE);
+const auth = firebase.auth();
+auth.onAuthStateChanged(user => {
+  document.getElementById("login").hidden = !!user;
+  document.getElementById("app").hidden = !user;
+  document.getElementById("logout").hidden = !user;
+  document.getElementById("who").textContent = user ? `Connecté : ${user.email}` : "Connexion requise";
+  if (user) {
+    loadList();
+    const qid = new URLSearchParams(location.search).get("id");
+    if (qid) openRumeur(qid);
+  }
+});
+async function signIn(e) {
+  e.preventDefault();
+  try { await auth.signInWithEmailAndPassword(document.getElementById("email").value, document.getElementById("pwd").value); }
+  catch (err) { document.getElementById("login-msg").textContent = "Connexion refusée : vérifiez l'e-mail et le mot de passe."; }
+}
+document.getElementById("logout").onclick = e => { e.preventDefault(); auth.signOut(); };
+
+async function loadList() {
+  const box = document.getElementById("list");
+  try {
+    const rows = await (await fetch(`${cfg.API_URL}/api/rumeurs`)).json();
+    if (!rows.length) { box.innerHTML = '<p class="muted">Aucune rumeur pour le moment.</p>'; return; }
+    box.innerHTML = rows.map(r => `
+      <div class="card ${r.id === current ? "active" : ""}" onclick="openRumeur('${esc(r.id)}')">
+        <div class="row"><span class="score ${scoreClass(r.score)}">${r.score}/100</span>
+          <span class="badge b-${esc(r.statut)}">${esc(r.statut.replace("_", " "))}</span></div>
+        <p ${rtl(r.titre)} style="margin:8px 0 4px">${esc(r.titre)}</p>
+        <p class="muted" style="margin:0">${r.nb_publications} publications · ${r.publications_heure} la dernière heure · ${esc((r.langues||[]).join(", "))}</p>
+      </div>`).join("");
+  } catch (e) { box.innerHTML = `<p class="muted">API injoignable (${esc(e.message)}).</p>`; }
+}
+
+async function openRumeur(id) {
+  current = id; loadList();
+  const r = await (await fetch(`${cfg.API_URL}/api/rumeurs/${encodeURIComponent(id)}`)).json();
+  const samples = (r.exemples || []).map(s => `
+    <div class="sample" ${rtl(s.text)}>${esc(s.text)}<br><span class="muted">${esc(s.lang)} · ${esc(s.source)} · ${esc(s.auteur_pseudo || "")}
+    ${s.url ? `· <a href="${esc(s.url)}" target="_blank" rel="noopener">source</a>` : ""}</span></div>`).join("");
+  const history = (r.verdicts || []).map(v => `<li>${esc(v.verdict)} par ${esc(v.auteur)} — ${new Date(v.cree_le).toLocaleString("fr-FR")}</li>`).join("");
+  document.getElementById("detail").innerHTML = `
+    <div class="row"><span class="score ${scoreClass(r.score)}">Score ${r.score}/100</span><span class="muted">${esc(r.id)}</span></div>
+    <p ${rtl(r.titre)}><b>${esc(r.titre)}</b></p>
+    <p class="muted">${r.nb_publications} publications · portée ${Number(r.portee).toLocaleString("fr-FR")} ·
+      ${Math.round(100 * r.part_suspects)} % de comptes récents · détectée le ${new Date(r.premiere_detection).toLocaleString("fr-FR")}</p>
+    <h3 style="font-size:15px">Publications regroupées</h3>${samples}
+    ${history ? `<h3 style="font-size:15px">Historique</h3><ul class="muted">${history}</ul>` : ""}
+    <h3 style="font-size:15px">Qualifier la rumeur</h3>
+    <label for="verdict">Verdict</label>
+    <select id="verdict">
+      <option value="fausse">Fausse</option><option value="trompeuse">Trompeuse</option>
+      <option value="vraie">Vraie</option><option value="en_verification">En vérification</option>
+      <option value="hors_sujet">Hors sujet</option>
+    </select>
+    <label for="dementi">Démenti publié (visible sur la page publique)</label>
+    <textarea id="dementi" placeholder="Ex. : Après vérification auprès du bureau concerné, la vidéo…"></textarea>
+    <button id="save" onclick="saveVerdict()">Enregistrer le verdict</button>
+    <p id="msg" class="muted"></p>`;
+}
+
+async function saveVerdict() {
+  document.getElementById("save").disabled = true;
+  const token = await auth.currentUser.getIdToken();
+  const res = await fetch(`${cfg.API_URL}/api/rumeurs/${encodeURIComponent(current)}/verdict`, {
+    method: "POST", headers: {"Content-Type": "application/json", "Authorization": `Bearer ${token}`},
+    body: JSON.stringify({verdict: document.getElementById("verdict").value,
+                          dementi: document.getElementById("dementi").value || null})
+  });
+  const out = await res.json();
+  const text = res.ok ? `Verdict enregistré par ${out.auteur} (${new Date(out.horodatage).toLocaleString("fr-FR")}).` : `Erreur : ${out.erreur}`;
+  if (res.ok) await openRumeur(current);
+  document.getElementById("msg").textContent = text;
+  document.getElementById("save").disabled = false;
+}
+document.getElementById("refresh").onclick = loadList;
+</script>
+</body>
+</html>

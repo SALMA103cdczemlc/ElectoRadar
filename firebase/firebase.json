@@ -1,0 +1,8 @@
+{
+  "hosting": {
+    "public": "public",
+    "ignore": ["firebase.json", "**/.*"],
+    "headers": [{ "source": "**", "headers": [{ "key": "X-Content-Type-Options", "value": "nosniff" }] }]
+  },
+  "firestore": { "rules": "firestore.rules" }
+}

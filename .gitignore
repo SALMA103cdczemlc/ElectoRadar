@@ -1,0 +1,11 @@
+dist/
+__pycache__/
+*.pyc
+node_modules/
+.wrangler/
+.firebase/
+local.settings.json
+.env
+*.pem
+*.key
+sa_*.json

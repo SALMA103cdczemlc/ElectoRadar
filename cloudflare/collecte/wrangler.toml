@@ -1,0 +1,27 @@
+name = "electoradar-collecte"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+[triggers]
+crons = ["*/2 * * * *", "0 23 * * *"]
+
+[[kv_namespaces]]
+binding = "CURSORS"
+id = "__KV_CURSORS_ID__"
+
+[[kv_namespaces]]
+binding = "SEEN"
+id = "__KV_SEEN_ID__"
+
+[[queues.producers]]
+binding = "POSTS"
+queue = "electoradar-posts"
+
+[vars]
+MODE = "replay"
+BATCH_SIZE = "4"
+RSS_FEEDS = ""
+
+[observability]
+enabled = true
+

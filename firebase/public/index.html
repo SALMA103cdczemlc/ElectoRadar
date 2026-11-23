@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ElectoRadar — Rumeurs électorales vérifiées</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="lib/firebase-app-compat.js"></script>
+  <script src="lib/firebase-firestore-compat.js"></script>
+  <script src="lib/chart.umd.js"></script>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ElectoRadar</h1>
+    <p>Rumeurs électorales détectées et vérifiées par la commission</p>
+  </div>
+  <nav><a href="fact-checkeur.html">Espace fact-checkeur</a></nav>
+</header>
+<main>
+  <div class="notice">Les rumeurs sont détectées automatiquement sur les réseaux sociaux et la presse en ligne.
+    Seul un fact-checkeur de la commission peut les qualifier de vraies ou de fausses.</div>
+
+  <h2><span class="live"></span>Tableau de bord en direct</h2>
+  <div class="kpis">
+    <div class="card kpi"><div class="muted">Rumeurs suivies</div><div class="v" id="k-rumeurs">–</div></div>
+    <div class="card kpi"><div class="muted">Publications analysées</div><div class="v" id="k-pubs">–</div></div>
+    <div class="card kpi"><div class="muted">Au-dessus du seuil d'alerte</div><div class="v" id="k-alertes">–</div></div>
+    <div class="card kpi"><div class="muted">Démentis publiés</div><div class="v" id="k-dementis">–</div></div>
+  </div>
+  <div class="card"><div class="chartbox"><canvas id="chart"></canvas></div></div>
+
+  <h2>Démentis publiés</h2>
+  <div id="dementis"><p class="muted">Chargement…</p></div>
+</main>
+<script>
+const cfg = window.ELECTORADAR;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rtl = s => /[؀-ۿ]/.test(s) ? 'dir="rtl"' : "";
+const LABELS = {fausse: "Fausse", trompeuse: "Trompeuse", vraie: "Vraie"};
+const short = s => s.length > 48 ? s.slice(0, 46) + "…" : s;
+
+// Statistiques en direct depuis Firebase Firestore (écrites par Azure Functions)
+firebase.initializeApp(cfg.FIREBASE);
+let chart;
+firebase.firestore().collection("rumeurs").orderBy("score", "desc").limit(10).onSnapshot(snap => {
+  const rows = snap.docs.map(d => d.data());
+  document.getElementById("k-rumeurs").textContent = snap.size;
+  document.getElementById("k-pubs").textContent = rows.reduce((a, r) => a + (r.nb_publications || 0), 0);
+  document.getElementById("k-alertes").textContent = rows.filter(r => r.score >= 70).length;
+  const data = {
+    labels: rows.map(r => short(r.titre)),
+    datasets: [{ label: "Score de viralité (/100)", data: rows.map(r => r.score),
+      backgroundColor: rows.map(r => r.score >= 70 ? "#c62828" : r.score >= 50 ? "#e07b00" : "#1e8e3e") }]
+  };
+  if (!chart) {
+    chart = new Chart(document.getElementById("chart"), { type: "bar", data,
+      options: { indexAxis: "y", maintainAspectRatio: false, scales: { x: { min: 0, max: 100 } },
+                 plugins: { legend: { display: false } } } });
+  } else { chart.data = data; chart.update(); }
+});
+
+async function loadDementis() {
+  const box = document.getElementById("dementis");
+  try {
+    const rows = await (await fetch(`${cfg.API_URL}/api/dementis`)).json();
+    document.getElementById("k-dementis").textContent = rows.length;
+    if (!rows.length) { box.innerHTML = '<p class="muted">Aucun démenti publié pour le moment.</p>'; return; }
+    box.innerHTML = rows.map(r => `
+      <div class="card">
+        <div class="row"><span class="badge b-${esc(r.verdict)}">${esc(LABELS[r.verdict] || r.verdict)}</span>
+          <span class="muted">${new Date(r.cree_le).toLocaleString("fr-FR")}</span></div>
+        <p><b>Rumeur :</b> <span ${rtl(r.titre)}>${esc(r.titre)}</span></p>
+        <p><b>Démenti de la commission :</b> ${esc(r.dementi)}</p>
+        <p class="muted">${r.nb_publications} publications détectées · langues : ${esc((r.langues || []).join(", "))}</p>
+      </div>`).join("");
+  } catch (e) { box.innerHTML = `<p class="muted">API injoignable (${esc(e.message)}).</p>`; }
+}
+loadDementis();
+setInterval(loadDementis, 30000);
+</script>
+</body>
+</html>
