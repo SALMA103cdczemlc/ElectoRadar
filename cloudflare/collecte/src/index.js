@@ -84,38 +84,90 @@ function tag(item, name) {
   return m ? m[1].trim() : "";
 }
 
-async function collectRssLive(env) {
-  const feeds = (env.RSS_FEEDS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  const keywords = (env.KEYWORDS || "élection,bureau de vote,urne,scrutin,candidat,انتخابات,التصويت,صندوق")
+function clean(html) {
+  return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10))).replace(/\s+/g, " ").trim();
+}
+
+function feeds(env) {
+  return (env.RSS_FEEDS || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function keywords(env) {
+  return (env.KEYWORDS || "élection,électora,scrutin,urne,urnes,bureau de vote,bureaux de vote,législatives,انتخاب,الانتخابات,التصويت,الاقتراع,صناديق")
     .split(",").map((k) => k.trim().toLowerCase());
-  const last = Date.parse((await getCursor(env, "rss")) || "2000-01-01T00:00:00Z");
-  let newest = last;
-  const posts = [];
-  for (const feed of feeds) {
-    const xml = await (await fetch(feed, { headers: { "User-Agent": "ElectoRadar/1.0" } })).text();
-    for (const item of xml.split(/<item[\s>]/i).slice(1)) {
-      const title = tag(item, "title");
-      const pub = Date.parse(tag(item, "pubDate"));
-      if (!pub || pub <= last) continue;
-      if (!keywords.some((k) => (title + " " + tag(item, "description")).toLowerCase().includes(k))) continue;
-      newest = Math.max(newest, pub);
-      const link = tag(item, "link");
-      posts.push({
-        id: "rss-" + [...link].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7), source: "rss",
-        author: new URL(feed).hostname, text: title, url: link, created_at: new Date(pub).toISOString(),
-        reach: 0, shares: 0, author_account_age_days: 3650, collected_at: nowIso(), mode: "live",
-      });
-    }
+}
+
+function matches(text, kw) {
+  const t = " " + text.toLowerCase() + " ";
+  return kw.some((k) => /^[a-zà-ÿ ]+$/.test(k) ? new RegExp(`(^|[^a-zà-ÿ])${k}`).test(t) : t.includes(k));
+}
+
+async function readFeed(feed) {
+  const res = await fetch(feed, { headers: { "User-Agent": "Mozilla/5.0 (compatible; ElectoRadar/1.0)" } });
+  if (!res.ok) throw new Error(`${res.status}`);
+  const xml = await res.text();
+  return xml.split(/<item[\s>]/i).slice(1).map((item) => {
+    const title = clean(tag(item, "title"));
+    const source = clean(tag(item, "source") || tag(item, "News:Source"));
+    let link = clean(tag(item, "link"));
+    const real = link.includes("bing.com/news/apiclick") && new URL(link).searchParams.get("url");
+    if (real) link = real;
+    return {
+      title, source, link, pub: Date.parse(tag(item, "pubDate")),
+      description: clean(tag(item, "description")).slice(0, 400),
+    };
+  });
+}
+
+async function collectRssLive(env) {
+  const kw = keywords(env);
+  const cur = await getCursor(env, "rss");
+  const last = cur && !isNaN(Date.parse(cur)) ? Date.parse(cur) : Date.now() - 48 * 3600 * 1000;
+  const max = parseInt(env.RSS_MAX || "12", 10);
+  let found = [];
+  const erreurs = {};
+  for (const feed of feeds(env)) {
+    try {
+      for (const it of await readFeed(feed)) {
+        if (!it.pub || it.pub <= last || !it.title) continue;
+        if (!matches(it.title + " " + it.description, kw)) continue;
+        found.push({ ...it, feed });
+      }
+    } catch (e) { erreurs[new URL(feed).hostname] = e.message; }
   }
+  const seen = new Set();
+  found = found.sort((a, b) => b.pub - a.pub).filter((it) => !seen.has(it.title) && seen.add(it.title)).slice(0, max);
+  const posts = found.map((it) => ({
+    id: "rss-" + [...it.link].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7), source: "rss",
+    author: it.source || new URL(it.feed).hostname, text: it.title, url: it.link,
+    created_at: new Date(it.pub).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    reach: 0, shares: 0, author_account_age_days: 3650, collected_at: nowIso(), mode: "live",
+  }));
   const stored = await publish(env, posts);
-  if (newest > last) await setCursor(env, "rss", new Date(newest).toISOString(), posts.length);
-  return { nouvelles: posts.length, fichiers: stored };
+  const newest = Math.max(last, ...found.map((it) => it.pub));
+  if (found.length) await setCursor(env, "rss", new Date(newest).toISOString(), posts.length);
+  return { nouvelles: posts.length, fichiers: stored, ...(Object.keys(erreurs).length ? { erreurs } : {}) };
+}
+
+async function sources(env) {
+  const out = {};
+  for (const feed of feeds(env)) {
+    try {
+      const items = await readFeed(feed);
+      const kw = keywords(env);
+      const hits = items.filter((it) => matches(it.title + " " + it.description, kw));
+      out[feed] = { articles: items.length, sur_les_elections: hits.length, exemple: hits[0]?.title || null };
+    } catch (e) { out[feed] = { erreur: e.message }; }
+  }
+  return out;
 }
 
 export async function collect(env, source) {
-  if (env.MODE === "live" && source === "x" && env.X_BEARER_TOKEN) return collectXLive(env);
-  if (env.MODE === "live" && source === "rss") return collectRssLive(env);
-  return collectReplay(env, source);
+  if (source === "x") return env.X_MODE === "live" && env.X_BEARER_TOKEN ? collectXLive(env) : collectReplay(env, "x");
+  return env.RSS_MODE === "live" ? collectRssLive(env) : collectReplay(env, "rss");
 }
 
 async function collectAll(env) {
@@ -147,7 +199,7 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/") return json({ service: "ElectoRadar — collecte", routes: ["/etat", "/collecter", "/reset"] });
+    if (url.pathname === "/") return json({ service: "ElectoRadar — collecte", routes: ["/etat", "/sources", "/collecter", "/reset"] });
     if (!env.ADMIN_TOKEN || request.headers.get("Authorization") !== `Bearer ${env.ADMIN_TOKEN}`)
       return json({ erreur: "non autorisé" }, 401);
     if (url.pathname === "/etat") {
@@ -176,6 +228,7 @@ export default {
       if (env.RESET_URL) azure = await (await fetch(env.RESET_URL, { method: "POST" })).json();
       return json({ reset: true, doublons_effaces: seen, azure });
     }
+    if (url.pathname === "/sources") return json(await sources(env));
     if (url.pathname === "/rapport" && request.method === "POST") return json(await triggerReport(env));
     return json({ erreur: "route inconnue" }, 404);
   },

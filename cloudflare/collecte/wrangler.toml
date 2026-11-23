@@ -18,9 +18,11 @@ binding = "POSTS"
 queue = "electoradar-posts"
 
 [vars]
-MODE = "replay"
+X_MODE = "replay"
+RSS_MODE = "live"
 BATCH_SIZE = "4"
-RSS_FEEDS = ""
+RSS_MAX = "12"
+RSS_FEEDS = "https://www.bing.com/news/search?q=%C3%A9lections+Maroc&format=rss,https://www.bing.com/news/search?q=%D8%A7%D9%84%D8%A7%D9%86%D8%AA%D8%AE%D8%A7%D8%A8%D8%A7%D8%AA+%D8%A7%D9%84%D9%85%D8%BA%D8%B1%D8%A8&format=rss,https://fr.hespress.com/feed,https://www.hespress.com/feed,https://fr.le360.ma/arc/outboundfeeds/rss/?outputType=xml,https://telquel.ma/feed,https://www.lesiteinfo.com/feed,https://www.yabiladi.com/rss/news.xml,https://www.barlamane.com/feed,https://alyaoum24.com/feed"
 
 [observability]
 enabled = true
